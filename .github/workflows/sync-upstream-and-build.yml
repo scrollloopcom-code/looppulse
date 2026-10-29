@@ -1,0 +1,140 @@
+name: Upstream Sync & LoopPulse Release
+
+on:
+  schedule:
+    - cron: '0 4 * * *' # Runs daily at 04:00 UTC
+  workflow_dispatch:
+    inputs:
+      force_build:
+        description: "Force build and release LoopPulse DMG even if no new upstream changes"
+        type: boolean
+        default: true
+
+concurrency:
+  group: sync-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  sync:
+    name: Sync with Upstream Stats
+    runs-on: macos-latest
+    permissions:
+      contents: write
+    outputs:
+      has_new_changes: ${{ steps.check_sync.outputs.has_new_changes }}
+    steps:
+      - name: Checkout LoopPulse Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure Git User
+        run: |
+          git config user.name "Scroll Loop Bot"
+          git config user.email "bot@scrollloop.com"
+
+      - name: Fetch Upstream Repository
+        run: |
+          git remote add upstream https://github.com/exelban/stats.git || true
+          git fetch upstream --tags
+
+      - name: Check and Merge Upstream
+        id: check_sync
+        run: |
+          LATEST_UPSTREAM_TAG=$(git describe --tags $(git rev-list --tags --max-count=1 upstream/master) 2>/dev/null || echo "v3.0.23")
+          echo "Latest upstream tag is: $LATEST_UPSTREAM_TAG"
+          
+          # Attempt to merge upstream/master while preserving our custom branding and features
+          if git merge upstream/master -s recursive -X ours -m "chore(sync): merge upstream $LATEST_UPSTREAM_TAG into LoopPulse" ; then
+            echo "Successfully merged upstream without conflict"
+            git push origin main --tags || true
+            echo "has_new_changes=true" >> $GITHUB_OUTPUT
+          else
+            echo "Merge had no new changes or was already up to date"
+            echo "has_new_changes=false" >> $GITHUB_OUTPUT
+          fi
+
+  build:
+    name: Build & Release LoopPulse DMG
+    needs: sync
+    if: needs.sync.outputs.has_new_changes == 'true' || inputs.force_build == true
+    runs-on: macos-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Extract Version
+        id: get_version
+        run: |
+          VERSION=$(/usr/libexec/PlistBuddy -c "Print CFBundleShortVersionString" Stats/Supporting\ Files/Info.plist 2>/dev/null || echo "3.0.23")
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Building LoopPulse v$VERSION"
+
+      - name: Prepare Xcode Archive
+        run: |
+          mkdir -p build
+          xcodebuild \
+            -scheme Stats \
+            -destination 'platform=macOS' \
+            -configuration Release archive \
+            -archivePath build/LoopPulse.xcarchive
+
+      - name: Export Application Bundle
+        run: |
+          xcodebuild -exportArchive \
+            -exportOptionsPlist exportOptions.plist \
+            -archivePath build/LoopPulse.xcarchive \
+            -exportPath build
+
+      - name: Apply LoopPulse Branding & Icon
+        run: |
+          APP="build/Stats.app"
+          if [ -d "$APP" ]; then
+            mv "$APP" "build/LoopPulse.app"
+          fi
+          # Ad-hoc sign
+          codesign --force --deep --sign - "build/LoopPulse.app"
+
+      - name: Build LoopPulse.dmg
+        run: |
+          git clone --depth 1 https://github.com/create-dmg/create-dmg
+          ./create-dmg/create-dmg \
+            --volname "LoopPulse" \
+            --background "./Stats/Supporting Files/background.png" \
+            --window-pos 200 120 \
+            --window-size 500 320 \
+            --icon-size 80 \
+            --icon "LoopPulse.app" 125 175 \
+            --hide-extension "LoopPulse.app" \
+            --app-drop-link 375 175 \
+            --no-internet-enable \
+            "build/LoopPulse-v${{ steps.get_version.outputs.version }}.dmg" "build/LoopPulse.app"
+          rm -rf ./create-dmg
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: LoopPulse-DMG
+          path: build/LoopPulse-*.dmg
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/') || inputs.force_build == true
+        with:
+          tag_name: "v${{ steps.get_version.outputs.version }}"
+          name: "LoopPulse v${{ steps.get_version.outputs.version }} (by Scroll Loop)"
+          body: |
+            ### ⚡ LoopPulse — Next-Generation macOS Telemetry Monitor
+            Branded & Maintained by **Scroll Loop** ([scrollloop.com](https://scrollloop.com))
+
+            - **Features:**
+              - Real-time CPU, GPU, RAM, Disk, Sensors, Battery & Network telemetry
+              - Equalizer Pulse Wave Brand Icon & Dynamic Neon telemetry aesthetics
+              - Unified seamless syncing with upstream `exelban/stats`
+              - Custom Web Dashboard integration on port 3456
+          files: build/LoopPulse-*.dmg
