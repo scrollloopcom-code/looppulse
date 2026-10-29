@@ -71,7 +71,7 @@ jobs:
       - name: Extract Version
         id: get_version
         run: |
-          VERSION=$(/usr/libexec/PlistBuddy -c "Print CFBundleShortVersionString" Stats/Supporting\ Files/Info.plist 2>/dev/null || echo "3.0.23")
+          VERSION=$(/usr/libexec/PlistBuddy -c "print :objects:9A141107229E721200D29793:buildSettings:MARKETING_VERSION" Stats.xcodeproj/project.pbxproj 2>/dev/null || echo "3.0.23")
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "Building LoopPulse v$VERSION"
 
