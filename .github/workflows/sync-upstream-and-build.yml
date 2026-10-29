@@ -75,29 +75,36 @@ jobs:
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "Building LoopPulse v$VERSION"
 
-      - name: Prepare Xcode Archive
+      - name: Build Xcode Archive (Ad-Hoc Signing)
         run: |
           mkdir -p build
           xcodebuild \
             -scheme Stats \
             -destination 'platform=macOS' \
             -configuration Release archive \
-            -archivePath build/LoopPulse.xcarchive
-
-      - name: Export Application Bundle
-        run: |
-          xcodebuild -exportArchive \
-            -exportOptionsPlist exportOptions.plist \
             -archivePath build/LoopPulse.xcarchive \
-            -exportPath build
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO
 
-      - name: Apply LoopPulse Branding & Icon
+      - name: Extract and Rebrand Application Bundle
         run: |
-          APP="build/Stats.app"
-          if [ -d "$APP" ]; then
-            mv "$APP" "build/LoopPulse.app"
+          # Copy app bundle directly from the archive
+          cp -R build/LoopPulse.xcarchive/Products/Applications/Stats.app build/LoopPulse.app
+          
+          # Update Info.plist with LoopPulse identity
+          PLIST="build/LoopPulse.app/Contents/Info.plist"
+          /usr/libexec/PlistBuddy -c "Set :CFBundleName LoopPulse" "$PLIST" || true
+          /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier com.scrollloop.looppulse" "$PLIST" || true
+          /usr/libexec/PlistBuddy -c "Set :NSHumanReadableCopyright 'Copyright © 2026 Scroll Loop (scrollloop.com). All rights reserved.'" "$PLIST" || true
+          
+          # Rename binary inside MacOS
+          if [ -f "build/LoopPulse.app/Contents/MacOS/Stats" ]; then
+            mv "build/LoopPulse.app/Contents/MacOS/Stats" "build/LoopPulse.app/Contents/MacOS/LoopPulse"
+            /usr/libexec/PlistBuddy -c "Set :CFBundleExecutable LoopPulse" "$PLIST" || true
           fi
-          # Ad-hoc sign
+
+          # Re-sign bundle ad-hoc
           codesign --force --deep --sign - "build/LoopPulse.app"
 
       - name: Build LoopPulse.dmg
